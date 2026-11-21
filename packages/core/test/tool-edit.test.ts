@@ -627,6 +627,66 @@ describe("EditTool", () => {
     }),
   )
 
+  for (const fixture of [
+    { source: "a  \na  \na  \nb  \n", search: "a\na\nb", expected: "a  \nx\n", all: false },
+    { source: "a  \nb  \na  \nb  \na  \nc  \n", search: "a\nb\na\nc", expected: "a  \nb  \nx\n", all: false },
+    { source: "lead\r\na  \r\nb\t\r\ntail\r\n", search: "a\nb\n", expected: "lead\r\nx\r\ntail\r\n", all: false },
+    { source: "\n\n\n", search: " \n ", expected: "xx\n", all: true },
+  ])
+    it.live(`matches trailing whitespace after a partial prefix: ${JSON.stringify(fixture.search)}`, () =>
+      withTempDir((tmp) => {
+        const edit = makeEditFixture()
+        const target = path.join(tmp.path, "prefix.txt")
+        return Effect.promise(() => fs.writeFile(target, fixture.source)).pipe(
+          Effect.andThen(
+            withTool(tmp.path, edit, (registry) =>
+              executeTool(
+                registry,
+                call({
+                  path: "prefix.txt",
+                  oldString: fixture.search,
+                  newString: fixture.search.endsWith("\n") ? "x\n" : "x",
+                  replaceAll: fixture.all,
+                }),
+              ),
+            ),
+          ),
+          Effect.tap((settled) => Effect.sync(() => expect(settled.status).toBe("completed"))),
+          Effect.andThen(() => Effect.promise(() => fs.readFile(target, "utf8"))),
+          Effect.tap((content) => Effect.sync(() => expect(content).toBe(fixture.expected))),
+        )
+      }),
+    )
+
+  it.live("finds large repeated whitespace-tolerant regions without rescanning overlapping prefixes", () =>
+    withTempDir((tmp) => {
+      const edit = makeEditFixture()
+      const target = path.join(tmp.path, "repeated.txt")
+      return Effect.promise(() => fs.writeFile(target, "same  \n".repeat(20_000))).pipe(
+        Effect.andThen(
+          withTool(tmp.path, edit, (registry) =>
+            executeTool(
+              registry,
+              call({
+                path: "repeated.txt",
+                oldString: "same\n".repeat(10_000),
+                newString: "changed\n",
+                replaceAll: true,
+              }),
+            ),
+          ),
+        ),
+        Effect.tap((settled) =>
+          Effect.sync(() =>
+            expect(settled).toMatchObject({ status: "completed", output: "Edited repeated.txt (2 replacements)" }),
+          ),
+        ),
+        Effect.andThen(() => Effect.promise(() => fs.readFile(target, "utf8"))),
+        Effect.tap((content) => Effect.sync(() => expect(content).toBe("changed\nchanged\n"))),
+      )
+    }),
+  )
+
   it.live("preserves BOM and CRLF line endings", () =>
     withTempDir((tmp) => {
       const edit = makeEditFixture()

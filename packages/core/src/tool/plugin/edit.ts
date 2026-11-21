@@ -61,8 +61,9 @@ const findOccurrences = (content: string, search: string) => {
 
 const findLineOccurrences = (content: string, search: string) => {
   const trailingNewline = search.endsWith("\n")
-  const expected = search.split("\n")
-  if (trailingNewline) expected.pop()
+  const keys = (trailingNewline ? search.slice(0, -1) : search)
+    .split("\n")
+    .map((line) => normalizeForMatch(line.trimEnd()))
   const lines = [...content.matchAll(/[^\n]*(?:\n|$)/g)]
     .filter((match) => match[0] !== "")
     .map((match) => {
@@ -71,30 +72,32 @@ const findLineOccurrences = (content: string, search: string) => {
       return {
         start: match.index,
         end: match.index + match[0].length,
-        text,
+        key: normalizeForMatch(text.trimEnd()),
         contentEnd: match.index + text.length - (text.endsWith("\r") ? 1 : 0),
         newline,
       }
     })
-  const candidates = lines.flatMap((line, index) => {
-    const actual = lines.slice(index, index + expected.length)
-    if (actual.length !== expected.length) return []
-    if (
-      !actual.every(
-        (item, lineIndex) =>
-          normalizeForMatch(item.text.trimEnd()) === normalizeForMatch(expected[lineIndex].trimEnd()),
-      )
-    )
-      return []
-    const last = actual.at(-1)!
-    if (trailingNewline && !last.newline) return []
-    return [{ start: line.start, end: trailingNewline ? last.end : last.contentEnd }]
+  // KMP reuses matched prefixes instead of copying and rechecking every candidate line range.
+  const prefixes = new Uint32Array(keys.length)
+  for (let index = 1, matched = 0; index < keys.length; index++) {
+    while (matched > 0 && keys[index] !== keys[matched]) matched = prefixes[matched - 1]
+    if (keys[index] === keys[matched]) matched++
+    prefixes[index] = matched
+  }
+  const result: Match[] = []
+  let matched = 0
+  lines.forEach((line, index) => {
+    while (matched > 0 && line.key !== keys[matched]) matched = prefixes[matched - 1]
+    if (line.key === keys[matched]) matched++
+    if (matched !== keys.length) return
+    const start = lines[index - matched + 1].start
+    const previous = result.at(-1)
+    if ((!trailingNewline || line.newline) && (previous === undefined || start >= previous.end))
+      result.push({ start, end: trailingNewline ? line.end : line.contentEnd })
+    // An empty final line may be shared by two non-overlapping spans.
+    matched = prefixes[matched - 1]
   })
-  return candidates.reduce<Match[]>((result, candidate) => {
-    if (result.some((match) => match.end > candidate.start && match.start < candidate.end)) return result
-    result.push(candidate)
-    return result
-  }, [])
+  return result
 }
 
 /** The dominant line ending in text, or fallback when there is none. */
