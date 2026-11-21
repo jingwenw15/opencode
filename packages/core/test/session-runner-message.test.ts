@@ -1106,6 +1106,30 @@ Earlier work
     expect(messages).toEqual([])
   })
 
+  test("replays interrupted reasoning with a linear number of content reads", () => {
+    let reads = 0
+    const count = 2_000
+    const content: SessionMessage.Assistant["content"] = Array.from({ length: count }, () => ({
+      get type() {
+        reads++
+        return "reasoning" as const
+      },
+      text: "Unfinished thought",
+    }))
+    const message: SessionMessage.Assistant = {
+      id: id("many-interrupted-blocks"),
+      type: "assistant",
+      agent: build,
+      model,
+      content,
+      error: { type: "aborted", message: "Step interrupted" },
+      time: { created },
+    }
+    expect(toLLMMessages([message], model)).toEqual([])
+    // Count work instead of asserting a machine-dependent wall-clock limit.
+    expect(reads).toBeLessThan(count * 10)
+  })
+
   test("drops model-scoped continuation metadata after a model switch but keeps hosted result payloads", () => {
     const messages = toLLMMessages(
       [
