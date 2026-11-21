@@ -6,7 +6,11 @@ await using directory = await tmpdir("opencode-loop-bench-")
 const child = Bun.spawn({
   cmd: [
     process.execPath,
-    path.join(import.meta.dir, process.argv[2] === "io" ? "benchmark-io-workload.ts" : "benchmark-loop-workload.ts"),
+    path.join(
+      import.meta.dir,
+      ["io", "search"].includes(process.argv[2]) ? "benchmark-io-workload.ts" : "benchmark-loop-workload.ts",
+    ),
+    process.argv[2] ?? "loop",
   ],
   env: {
     ...process.env,

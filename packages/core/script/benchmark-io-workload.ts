@@ -75,9 +75,28 @@ await Effect.gen(function* () {
     milliseconds: Math.round(milliseconds),
     rssMiB: Math.round(process.memoryUsage().rss / 1024 / 1024),
   })
+  yield* Effect.promise(() => fs.writeFile(path.join(directory.path, "whitespace.txt"), "same  \n".repeat(4_000)))
+  const searchStart = performance.now()
+  const searched = yield* executeTool(registry, {
+    sessionID: Session.ID.make("ses_benchmark"),
+    ...toolIdentity,
+    call: {
+      type: "tool-call",
+      id: "whitespace-benchmark",
+      name: "edit",
+      input: { path: "whitespace.txt", oldString: "same\n".repeat(2_000), newString: "changed\n", replaceAll: true },
+    },
+  })
+  const searchMs = performance.now() - searchStart
+  if (
+    searched.status !== "completed" ||
+    (yield* Effect.promise(() => Bun.file(path.join(directory.path, "whitespace.txt")).text())) !== "changed\nchanged\n"
+  )
+    throw new Error("Whitespace benchmark did not produce the expected file")
+  rows.push({ workload: "edit 4,000 repeated whitespace lines", milliseconds: Math.round(searchMs) })
 }).pipe(Effect.provide(layer), Effect.provideService(Flag.Overrides, undefined), Effect.scoped, Effect.runPromise)
 
-if (process.platform !== "win32") {
+if (process.platform !== "win32" && process.argv[2] !== "search") {
   // An unavailable helper that registers an unreachable socket reproduces the reported startup timeout.
   const binary = path.join(directory.path, "unavailable-daemon")
   await fs.writeFile(
