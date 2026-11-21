@@ -1,0 +1,184 @@
+Unofficial OpenCode performance fork
+
+Maintained independently; not built by or affiliated with the OpenCode team.
+Source: https://github.com/anomalyco/opencode, upstream/dev
+Base commit: ddb3817e3c94afd6257d6f7ad50db389f3f83f49
+Branch: faster-agent-loop
+
+Run this copy
+
+Install Bun 1.4.4 (the packageManager version in package.json), then run
+these commands from the root of this fork's checkout:
+
+  bun install --frozen-lockfile
+  bun run dev --standalone /path/to/your/repo
+
+--standalone makes this checkout serve its own backend, so the changes are
+used even if another installed background server exists. Normal provider
+authentication is still required. The upstream installation commands in the
+original README install the official release, not this fork.
+
+What changed
+
+1. Validation strategy and task scope
+
+The runtime does not automatically run an entire validation suite after an
+edit. The model chooses shell commands, influenced by its system prompt,
+repository instructions and skills. Removing a runtime delay alone cannot
+fix a model repeatedly selecting expensive validation.
+
+The stock prompts now share a workflow policy: answer ordinary discussion
+directly, keep exploration proportional to the change, batch related edits,
+use focused checks while iterating, run required checks at completion, and
+reuse passing results until a relevant input changes. Required repository
+checks still apply. Meta's prompt no longer demands delegation for ordinary
+code exploration. The native Claude Agent SDK prompt receives the policy too.
+
+This is model guidance, not a hard restriction on shell commands. Its effect
+on real work has not been measured against a live model. A custom system
+prompt on the standard route continues to override the stock system prompt.
+
+2. Tool schema copying
+
+Request preparation used to JSON-serialize and parse every tool input schema
+before running context hooks. Built-in prompt hooks usually enumerate tool
+names; they do not need those copies. Schemas are now copied lazily when a
+hook reads them. Schema mutations remain isolated between requests, and
+assignment and rename behavior is covered by regression tests.
+
+3. Interrupted reasoning replay
+
+For each reasoning block in an interrupted assistant response, replay used
+to copy the remaining content array and scan it for later output. This was
+quadratic in the number of blocks. It now finds the last output once and
+does a linear pass. A regression test counts content reads instead of using
+a timing threshold.
+
+CPU measurements
+
+Offline benchmarks of production functions on this Mac with Bun 1.4.4.
+Each result is the median of nine samples, ten calls per sample after warmup.
+The baseline used the same benchmark with changed production files restored
+to the base commit temporarily; all patched files were restored afterward.
+
+Workload                              Baseline       Patched
+20 tools, catalog hook                  0.121 ms      0.105 ms
+200 tools, catalog hook                 1.182 ms      0.375 ms
+1,000 interrupted reasoning blocks      1.435 ms      0.079 ms
+10,000 interrupted reasoning blocks   118.915 ms      0.341 ms
+
+The reasoning cases are stress tests, not representative chat turns. These
+are CPU microbenchmarks, not end-to-end speedup claims. Normal small catalogs
+save little absolute time; the workflow policy targets avoidable model and
+validation rounds, which can take much longer.
+
+Repeat the benchmark without model credentials:
+
+  cd packages/core
+  bun run script/benchmark-loop.ts
+
+The benchmark uses temporary storage and makes no model requests.
+
+Other findings and boundaries
+
+- Local tools already run concurrently, and the initial snapshot already
+  overlaps the provider request. Those paths were retained.
+- Every model step reloads durable history. This is a documented session
+  invariant; replacing it with an in-memory loop would change recovery and
+  steering behavior.
+- The end snapshot is on the critical path. Large worktrees can make it
+  expensive, but removing it would compromise change tracking and undo.
+- Plugin readiness is awaited at step boundaries. Slow plugin activation or
+  reload can therefore delay work; no blanket timeout or bypass was added.
+- Automatic compaction can make another model request. Background summaries
+  already reduce that wait. Their usefulness depends on context size.
+- Provider generation, reasoning effort, tool execution and retries remain
+  potential sources of seconds-long delays. Their relative contributions
+  in live user sessions are unmeasured.
+
+Existing tracing supports OTEL_EXPORTER_OTLP_ENDPOINT. Useful spans include
+SessionRunner.drain, SessionRunner.prepareContext, SessionContext.load,
+SessionModelRequest.prepare, SessionStep.attempt, LLM.stream and
+Snapshot.capture. Compare these on an actual slow session before removing
+additional behavior or reducing model effort.
+
+Verification notes
+
+Focused tests cover the runner, tool events, request hooks, interrupted
+replay, compaction, prompt selection, recorded HTTP transport and native
+Claude conversion/session behavior. The greeting cassette is unchanged;
+its matcher normalizes only the newly added workflow block while continuing
+to match the rest of the request. It does not measure model adherence to the
+new guidance.
+
+First implementation pass: 406 tests passed across 13 focused files; zero failures.
+The root bun run check passed lint and all 35 workspace typecheck tasks.
+git diff --check passed, and the source CLI's --help launched successfully.
+No live provider calls were made to evaluate the new workflow guidance.
+
+Additional I/O improvements
+
+4. Repeated failed PTY startup
+
+Related upstream issue: https://github.com/anomalyco/opencode/issues/64080
+
+An unsuccessful start was followed by another start from the request retry,
+and every later request repeated that work. When an unreachable helper stays
+alive without a working socket, this costs about twenty seconds per request.
+
+Failed starts now have a thirty-second cooldown measured with the monotonic
+Effect clock. Concurrent callers share that result under the existing
+startup permit. Discovery still runs before the cooldown gate, so an already
+recovered daemon can be used immediately. Successful recovery clears the
+failure; cancellation is not cached. Ordinary direct-spawn fallback remains
+available to shell commands. A repaired binary may wait until the cooldown
+expires before another automatic launch attempt.
+
+Controlled reproduction with the actual daemon transport and a helper that
+registers an unreachable socket, measured once per build on this Mac:
+
+Workload                               Baseline       Patched
+First failed PTY request                20,088 ms      10,067 ms
+Second failed PTY request               20,064 ms      <1 ms
+Total helper launches after both calls      8             2
+
+The initial recovery attempts still take time. This fixes repeated startup
+work when the daemon is unavailable; it does not speed up a healthy provider
+or establish that a particular user's environment has a daemon failure.
+
+5. Uniform-line-ending edits
+
+Related upstream issue: https://github.com/anomalyco/opencode/issues/60305
+
+The edit tool used a full longest-common-subsequence table to preserve line
+endings even when every ending was identical. The table is unnecessary for
+uniform LF or CRLF regions: every possible alignment yields the same ending.
+Those cases now use a linear replacement. Mixed-line-ending regions retain
+the original alignment algorithm and can still have quadratic cost.
+
+A one-line change supplied with 12,000 lines of LF matching context, executed
+through the actual registered edit tool with formatting disabled, took 703 ms
+on baseline and 14 ms with this fast path. Output equality was checked. The
+baseline LCS table for this input requires about 576 MB of typed-array
+storage; RSS is affected by garbage collection and is not used as a peak
+memory measurement. These are single-run observations, not statistical
+end-to-end task benchmarks.
+
+Repeat these I/O reproductions without model credentials:
+
+  cd packages/core
+  bun run script/benchmark-loop.ts io
+
+The PTY reproduction deliberately waits through startup timeouts, so the
+patched benchmark takes about ten seconds. It creates isolated temporary
+files and fixture helper processes. The PTY case currently runs on POSIX;
+the daemon cooldown's deterministic tests also cover the retry boundary,
+concurrent failures, cancellation, and recovery without waiting thirty
+seconds. Large-region edit tests cover both LF and CRLF output.
+
+Additional verification: 39 focused tests passed. The wider nine-file suite
+had 223 passes, 11 skips and two failures in existing shell process-
+substitution tests under macOS Bash 3.2 ("wait: pid ... is not a child of this
+shell"). Both failures were reproduced with the two new production changes
+removed. The final root bun run check passed lint and all 35 workspace
+typecheck tasks.
