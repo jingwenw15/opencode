@@ -41,6 +41,62 @@ const transport = SessionModelTransport.Service.of({
 })
 
 describe("SessionModelRequest HTTP hooks", () => {
+  it.effect("copies tool schemas only when a context hook reads them", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const inputSchema = { type: "object", required: ["id"] }
+      const tools = {
+        definitions: [new ToolDefinition({ name: "lookup", description: "Lookup", inputSchema })],
+        execute: () => Effect.die("unused tool execution"),
+      }
+      let copies = 0
+      Object.defineProperty(tools.definitions[0]!.inputSchema, "toJSON", {
+        get() {
+          copies++
+          return undefined
+        },
+      })
+      const kinds = ["primary", "compaction", "generate"] as const
+      for (const kind of kinds) {
+        const name = kind === "primary" ? "context" : kind
+        const input = { session, agent: Agent.ID.make("build"), model, system: [], messages: [], tools }
+        const schema = (prepared: SessionModelRequest.Prepared) => {
+          const tool = prepared.request.tools[0]
+          return tool?.type === "tool" ? tool.inputSchema : undefined
+        }
+        const unrelated = yield* hooks.register("session", name, () => Effect.die("wrong provider"), {
+          providerID: "other-provider",
+        })
+        copies = 0
+        expect(schema(yield* requests[kind](input))).toEqual(inputSchema)
+        expect(copies).toBe(0)
+        const catalog = yield* hooks.register("session", name, (event) =>
+          Effect.sync(() => {
+            expect(Object.keys(event.tools)).toEqual(["lookup"])
+          }),
+        )
+        expect(schema(yield* requests[kind](input))).toEqual(inputSchema)
+        expect(copies).toBe(0)
+        yield* catalog.dispose
+        const registration = yield* hooks.register("session", name, (event) =>
+          Effect.sync(() => {
+            const schema = event.tools.lookup!.input as { required: string[] }
+            schema.required.push("extra")
+          }),
+        )
+        expect(schema(yield* requests[kind](input))).toEqual({ type: "object", required: ["id", "extra"] })
+        expect(copies).toBe(1)
+        expect(inputSchema.required).toEqual(["id"])
+        yield* registration.dispose
+        copies = 0
+        expect(schema(yield* requests[kind](input))).toEqual(inputSchema)
+        expect(copies).toBe(0)
+        yield* unrelated.dispose
+      }
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
   it.effect(
     "advertises only supported freeform formats without removing tools or changing the shared definitions",
     () =>
@@ -75,6 +131,38 @@ describe("SessionModelRequest HTTP hooks", () => {
           )
         }
       }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
+  it.effect("preserves schema assignment and renaming in a context hook", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const inputSchema = { type: "object", required: ["id"] }
+      const tools = {
+        definitions: [new ToolDefinition({ name: "lookup", description: "Lookup", inputSchema })],
+        execute: () => Effect.die("unused tool execution"),
+      }
+      yield* hooks.register("session", "context", (event) =>
+        Effect.sync(() => {
+          const definition = event.tools.lookup!
+          definition.input = { type: "object", required: ["replacement"] }
+          delete event.tools.lookup
+          event.tools.renamed = definition
+        }),
+      )
+      const prepared = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [],
+        tools,
+      })
+      expect(prepared.request.tools).toMatchObject([
+        { name: "renamed", inputSchema: { type: "object", required: ["replacement"] } },
+      ])
+      expect(inputSchema.required).toEqual(["id"])
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
   )
 
   it.effect("tags every Session request kind on http.request and http.response", () =>
@@ -182,14 +270,12 @@ describe("SessionModelRequest HTTP hooks", () => {
       }
 
       const required = yield* Effect.forEach([1, 2], () =>
-        requests
-          .primary({ session, agent: Agent.ID.make("build"), model, system: [], messages: [], tools })
-          .pipe(
-            Effect.map((prepared) => {
-              const tool = prepared.request.tools[0]
-              return tool?.type === "tool" ? tool.inputSchema.required : undefined
-            }),
-          ),
+        requests.primary({ session, agent: Agent.ID.make("build"), model, system: [], messages: [], tools }).pipe(
+          Effect.map((prepared) => {
+            const tool = prepared.request.tools[0]
+            return tool?.type === "tool" ? tool.inputSchema.required : undefined
+          }),
+        ),
       )
 
       expect(required).toEqual([

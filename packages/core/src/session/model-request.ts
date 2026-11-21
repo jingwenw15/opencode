@@ -282,12 +282,22 @@ export const layer = Layer.effect(
       }
       // Remember which tool each definition object came from. Hooks rename a tool by moving
       // its definition to a new key, so after the hook we find the tool by object identity.
-      // Definitions are shared across steps and sessions, and hooks may edit schemas in place,
-      // so each hook gets a deep copy.
+      // Definitions are shared across steps and sessions. Copy a schema only when a hook
+      // reads it: built-in prompt hooks enumerate tool names without using their schemas.
       const given = new Map(
-        tools.definitions.map(
-          (t) => [{ description: t.description, input: JSON.parse(JSON.stringify(t.inputSchema)) }, t] as const,
-        ),
+        tools.definitions.map((t) => {
+          let input: Definitions[string]["input"] | undefined
+          const definition = {
+            description: t.description,
+            get input(): Definitions[string]["input"] {
+              return (input ??= JSON.parse(JSON.stringify(t.inputSchema)))
+            },
+            set input(value: Definitions[string]["input"]) {
+              input = value
+            },
+          }
+          return [definition, { tool: t, schema: () => input ?? t.inputSchema }] as const
+        }),
       )
       // Hooks see the default output limit and may change or remove it. Titles and generate keep the provider default,
       // because their reasoning is hard to budget.
@@ -304,15 +314,23 @@ export const layer = Layer.effect(
                 ? { maxTokens: outputLimit(model.limit, input.inputTokens) }
                 : {},
         },
-        Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
+        Object.fromEntries(Array.from(given, ([d, entry]) => [entry.tool.name, d])),
       )
       // Match by identity first, then by key. Entries matching neither were invented by a
       // hook and are dropped. `t.name` stays the real name so execution can map renames back.
       const byName = new Map(tools.definitions.map((t) => [t.name, t]))
       const hooked = new Map(
         Object.entries(shaped.tools ?? {}).flatMap(([name, d]) => {
-          const t = given.get(d) ?? byName.get(name)
-          return t ? [[name, { ...t, description: d.description, inputSchema: d.input }] as const] : []
+          const original = given.get(d)
+          const t = original?.tool ?? byName.get(name)
+          return t
+            ? [
+                [
+                  name,
+                  { ...t, description: d.description, inputSchema: original ? original.schema() : d.input },
+                ] as const,
+              ]
+            : []
         }),
       )
       const entries = Object.entries(shaped.options)
