@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
-import { Cause, Data, Duration, Effect, Schema, Semaphore } from "effect"
+import { Cause, Clock, Data, Duration, Effect, Schema, Semaphore } from "effect"
 import type { Handoff } from "@opencode/schema/persistent-pty"
 
 const ProtocolVersion = 9
@@ -209,6 +209,7 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
   let closed = false
   // Set once a daemon we spawned turned out to speak another protocol.
   let incompatible: DaemonError | undefined
+  let failedStart: { error: DaemonError; retryAt: bigint } | undefined
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       closed = true
@@ -321,8 +322,11 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
 
   // An unreachable daemon, or one left by another release, can still hold this directory's lock, so retry once in a
   // fresh directory. A binary that cannot be spawned, or that speaks another protocol, fails the same way again.
-  const start = () =>
-    spawnDaemon().pipe(
+  const start = Effect.fn("PersistentPty.daemon.start")(function* () {
+    // Discovery still runs before this gate, so a recovered daemon is usable immediately.
+    if (failedStart && (yield* Clock.monotonicTimeNanos) < failedStart.retryAt)
+      return yield* Effect.fail(failedStart.error)
+    return yield* spawnDaemon().pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
           if (error.kind === "spawn" || error === incompatible) return yield* Effect.fail(error)
@@ -331,7 +335,14 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
           return yield* spawnDaemon()
         }),
       ),
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          failedStart = { error, retryAt: (yield* Clock.monotonicTimeNanos) + 30_000_000_000n }
+          return yield* Effect.fail(error)
+        }),
+      ),
     )
+  })
 
   const abandon = () => {
     owner?.socket.destroy()
@@ -354,6 +365,7 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
           }),
         )
         if (!owner) yield* claim(found)
+        failedStart = undefined
         registration = found
         return found
       }),

@@ -3,10 +3,75 @@ import { spawn } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
-import { Effect, Fiber } from "effect"
+import { Deferred, Effect, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import { makeDaemonTransport } from "../src/persistent-pty/daemon"
 import { frame, listen, pong, temporaryDirectory, terminal, writeRegistration } from "./fixture/persistent-pty-daemon"
 import { it } from "./lib/effect"
+
+it.effect("shares failed startup across callers and retries after the cooldown", () =>
+  Effect.gen(function* () {
+    const { root } = yield* temporaryRuntime()
+    let starts = 0
+    const daemon = yield* makeDaemonTransport(root, "daemon", () => {
+      starts++
+      return Promise.reject(new Error("fixture binary unavailable"))
+    })
+    const errors = yield* Effect.all(
+      Array.from({ length: 4 }, () => daemon.request({ op: "list" }, true).pipe(Effect.flip)),
+      { concurrency: "unbounded" },
+    )
+    expect(errors.map((error) => error.kind)).toEqual(["spawn", "spawn", "spawn", "spawn"])
+    expect(starts).toBe(1)
+    yield* TestClock.adjust("29999 millis")
+    yield* daemon.request({ op: "list" }, true).pipe(Effect.flip)
+    expect(starts).toBe(1)
+    yield* TestClock.adjust("1 milli")
+    yield* daemon.request({ op: "list" }, true).pipe(Effect.flip)
+    expect(starts).toBe(2)
+  }),
+)
+
+it.live("discovers a recovered daemon during cooldown and clears its failed startup", () =>
+  Effect.gen(function* () {
+    const { root, directory } = yield* temporaryRuntime()
+    let starts = 0
+    const daemon = yield* makeDaemonTransport(root, "daemon", () => {
+      starts++
+      return Promise.reject(new Error("fixture binary unavailable"))
+    })
+    yield* daemon.request({ op: "list" }, true).pipe(Effect.flip)
+    const socketPath = path.join(directory, "recovered.sock")
+    const server = yield* listen(socketPath, (_socket, request) =>
+      request.op === "ping" ? pong : { type: "processes", processes: [] },
+    )
+    yield* Effect.promise(() => writeRegistration(directory, socketPath))
+    expect(yield* daemon.request({ op: "list" }, true)).toEqual({ type: "processes", processes: [] })
+    expect(starts).toBe(1)
+    yield* Effect.promise(server.close)
+    yield* daemon.request({ op: "list" }, true).pipe(Effect.flip)
+    expect(starts).toBe(2)
+  }),
+)
+
+it.effect("does not cache cancellation as a failed daemon startup", () =>
+  Effect.gen(function* () {
+    const { root } = yield* temporaryRuntime()
+    const starting = yield* Deferred.make<void>()
+    let starts = 0
+    const daemon = yield* makeDaemonTransport(root, "daemon", () => {
+      starts++
+      if (starts > 1) return Promise.reject(new Error("fixture binary unavailable"))
+      Deferred.doneUnsafe(starting, Effect.void)
+      return new Promise<string>(() => {})
+    })
+    const request = yield* daemon.request({ op: "list" }, true).pipe(Effect.forkScoped)
+    yield* Deferred.await(starting)
+    yield* Fiber.interrupt(request)
+    yield* daemon.request({ op: "list" }, true).pipe(Effect.flip)
+    expect(starts).toBe(2)
+  }),
+)
 
 it.live("rediscovers a same-protocol daemon after its registration rotates", () =>
   Effect.gen(function* () {
@@ -301,6 +366,27 @@ function temporaryRuntime() {
     return { root, directory }
   })
 }
+
+if (process.platform !== "win32")
+  it.live("does not restart a daemon that exits before registering on every request", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory()
+      const binary = path.join(root, "exiting-daemon")
+      yield* Effect.promise(() => writeFile(binary, "#!/bin/sh\nexit 1\n", { mode: 0o755 }))
+      let starts = 0
+      const daemon = yield* makeDaemonTransport(path.join(root, "runtime"), "daemon", () => {
+        starts++
+        return Promise.resolve(binary)
+      })
+      const errors = yield* Effect.all(
+        Array.from({ length: 4 }, () => daemon.request({ op: "list" }, true).pipe(Effect.flip)),
+        { concurrency: "unbounded" },
+      )
+      expect(errors.map((error) => error.kind)).toEqual(["connect", "connect", "connect", "connect"])
+      // One ordinary start and one fresh-directory recovery attempt, shared by all callers.
+      expect(starts).toBe(2)
+    }),
+  )
 
 if (process.platform !== "win32")
   it.live("gives up at once on a daemon binary that speaks another protocol, and never starts it again", () =>
