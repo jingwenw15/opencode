@@ -648,6 +648,27 @@ describe("EditTool", () => {
     }),
   )
 
+  for (const ending of ["\n", "\r\n"])
+    it.live(`edits a large region with uniform ${JSON.stringify(ending)} endings`, () =>
+      withTempDir((tmp) => {
+        const edit = makeEditFixture()
+        const target = path.join(tmp.path, "large.txt")
+        // A full LCS matrix for this region would require about 6 GiB.
+        const before = "first\n" + "unchanged\n".repeat(40_000)
+        const after = "changed\n" + before.slice("first\n".length)
+        return Effect.promise(() => fs.writeFile(target, before.replaceAll("\n", ending))).pipe(
+          Effect.andThen(
+            withTool(tmp.path, edit, (registry) =>
+              executeTool(registry, call({ path: "large.txt", oldString: before, newString: after })),
+            ),
+          ),
+          Effect.tap((settled) => Effect.sync(() => expect(settled.status).toBe("completed"))),
+          Effect.andThen(() => Effect.promise(() => fs.readFile(target, "utf8"))),
+          Effect.tap((content) => Effect.sync(() => expect(content).toBe(after.replaceAll("\n", ending)))),
+        )
+      }),
+    )
+
   it.live("refuses to rewrite a file that is not valid UTF-8", () =>
     withTempDir((tmp) => {
       const edit = makeEditFixture()

@@ -112,8 +112,10 @@ const lineEnding = (text: string, fallback: string) => {
  * `fallback`. Unchanged context inside a match therefore keeps its bytes even in a mixed-ending file.
  */
 const withRegionEndings = (region: string, replacement: string, fallback: string) => {
-  const before = region.split(/\r?\n/)
   const endings = [...region.matchAll(/\r?\n/g)].map((match) => match[0])
+  // With uniform endings every alignment produces the same result; avoid the quadratic LCS table.
+  if (endings.every((ending) => ending === fallback)) return replacement.replaceAll("\n", fallback)
+  const before = region.split(/\r?\n/)
   const after = replacement.split("\n")
   const key = (line: string) => normalizeForMatch(line.trimEnd())
   const source = alignLines(before.map(key), after.map(key))
