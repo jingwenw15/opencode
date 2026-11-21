@@ -182,3 +182,80 @@ substitution tests under macOS Bash 3.2 ("wait: pid ... is not a child of this
 shell"). Both failures were reproduced with the two new production changes
 removed. The final root bun run check passed lint and all 35 workspace
 typecheck tasks.
+
+6. Whitespace-tolerant edit matching
+
+The fallback that matches oldString while ignoring trailing whitespace used
+to copy a candidate line range at every position, repeatedly normalize the
+same lines, and scan earlier matches for overlaps. Repeated source lines
+and long search regions made this work quadratic.
+
+Both source and search lines are now normalized once. KMP prefix matching
+finds candidates in linear time, and a constant-time comparison with the
+last accepted span preserves the first, non-overlapping matches. The span
+comparison uses original string offsets; blank final lines can be shared
+without overlapping the replaced text. Exact and typography-only matching
+still take priority, and the line-ending preservation path is unchanged.
+
+A 4,000-line file with repeated trailing whitespace and a 2,000-line search
+pattern took 466 ms through the published edit tool (8de2cf7) and 10 ms
+through the final candidate. The output was checked for equality. These are local
+single-run observations; the new fast path applies when the whitespace-
+tolerant fallback is needed.
+
+Regression cases exercise partial-prefix fallback, repeated/overlapping
+matches, empty final lines and CRLF output through the real registered
+tool. A one-off differential experiment also compared the old and new
+matching helpers over 19,857 generated and 262,320 exhaustive small cases;
+all returned identical match spans. A large repeated-region regression
+exercises the algorithm without asserting machine-dependent timings.
+
+Repeat the edit benchmarks without waiting through the PTY failure case:
+
+  cd packages/core
+  bun run script/benchmark-loop.ts search
+
+Broader regression coverage
+
+The full AI suite passed 2,282 tests with 29 skips. The full Server suite
+passed 159 tests with one skip. CI mode replayed recorded provider responses;
+these runs do not test live provider behavior or model adherence to workflow
+guidance.
+
+The first full Core run had 7,861 passes, 46 skips and 31 failures. Twenty-
+eight failures came from the regression command's PATH omitting the already
+installed ripgrep, which triggered the harness's blocked-download guard.
+Preserving the existing PATH resolved all 34 search tests. The remaining
+three Bash 3.2 failures were reproduced with the fork's production changes
+restored to the upstream base: two conditional process-substitution waits
+and one compound-function command-substitution case. No tests were skipped
+or weakened to hide those failures.
+
+Final full-suite results after the edit-matching change:
+
+Suite       Passed   Skipped   Failed   Files
+Core         7,894       46        3     355
+AI           2,282       29        0     170
+Server         159        1        0      50
+
+All three remaining Core failures are the Bash 3.2 baseline failures above.
+The final root bun run check passed lint and all 35 workspace typecheck
+tasks. The five new edit cases also passed ten repetitions each (50 passes).
+
+Reproduction, with Bun and ripgrep available on the existing PATH:
+
+  cd packages/core
+  CI=true bun run script/test.ts
+
+  cd ../ai
+  CI=true bun test --timeout 30000 --only-failures
+
+  cd ../server
+  CI=true bun test --only-failures
+
+  cd ../..
+  bun run check
+
+These runs found no additional fork-related regression failures. They cover
+recorded/simulated model traffic and local APIs; live provider latency and
+the model's choice of validation commands remain unmeasured.
