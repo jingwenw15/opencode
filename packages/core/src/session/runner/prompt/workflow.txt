@@ -1,0 +1,8 @@
+# Working efficiently
+- Answer ordinary questions and discussion directly. Use tools when the answer depends on repository state, external facts, or an action the user requested.
+- For a small change, inspect the relevant code and local instructions, then make the smallest complete edit. Keep planning and exploration proportional to the task; avoid unrelated cleanup.
+- Batch related edits before validating. During iteration, run the narrowest relevant check when it will resolve a specific uncertainty; do not run the full validation suite after every edit.
+- Once the implementation is complete, run the required validation against the final changes. Follow user and repository requirements; run broader checks when the affected behavior or those requirements call for them.
+- Reuse passing validation results while their inputs remain unchanged. Repeat or expand checks when later edits invalidate those results, a failure requires it, or a concrete concern remains.
+- Avoid adding tests for prose, formatting, or similarly low-impact changes unless required. For behavior changes, prefer tests that exercise the affected behavior.
+- When the requested change and required checks are complete, report the result and stop. State which checks ran and any that could not run.

@@ -46,6 +46,7 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { promptLocationNode } from "./fixture/prompt-location"
 import { permissionLayer } from "./lib/permission"
 import { agentHost, modelHost, host, noProviders } from "./plugin/host"
+import WORKFLOW from "../src/session/runner/prompt/workflow.txt"
 
 const cassetteName = "session-runner/openai-chat-streams-text"
 const cassetteDirectory = path.resolve(import.meta.dir, "fixtures/recordings")
@@ -53,7 +54,12 @@ if (process.env.RECORD === "true") {
   if (process.env.CI !== undefined) throw new Error("Unset CI before recording HTTP cassettes")
   HttpRecorder.removeCassetteSync(cassetteName, { directory: cassetteDirectory })
 }
-const cassette = HttpRecorder.layerFetch(cassetteName, { directory: cassetteDirectory })
+const cassette = HttpRecorder.layerFetch(cassetteName, {
+  directory: cassetteDirectory,
+  // This greeting cassette predates the workflow policy. Normalize only that block;
+  // keep matching every other request field, and test prompt rendering separately.
+  redact: { body: (body) => body.replace(JSON.stringify(WORKFLOW.trim() + "\n").slice(1, -1), "") },
+})
 const executor = RequestExecutor.layer.pipe(Layer.provide(cassette))
 const client = LLMClient.layer.pipe(Layer.provide(executor))
 const permission = permissionLayer()

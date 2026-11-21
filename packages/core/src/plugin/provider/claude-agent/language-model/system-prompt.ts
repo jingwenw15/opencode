@@ -2,6 +2,7 @@ export * as ClaudeSystemPrompt from "./system-prompt.js"
 
 import type { Options } from "@anthropic-ai/claude-agent-sdk"
 import type { LanguageModelV3Prompt } from "@ai-sdk/provider"
+import WORKFLOW from "../../../../session/runner/prompt/workflow.txt"
 
 export const AGENT_OPTION = "claudeCodeAgent"
 export const INSTRUCTIONS_OPTION = "claudeCodeInstructions"
@@ -11,8 +12,10 @@ const primary = {
   preset: "claude_code",
   // Agent changes must take effect when a process resumes the same native session.
   snapshot: false,
-  append:
+  append: [
     "<runtime_info>You are running in OpenCode through the Claude Code harness. Mention this only when asked.</runtime_info>",
+    WORKFLOW.trim(),
+  ].join("\n\n"),
 } satisfies Options["systemPrompt"]
 
 export function make(role?: string, instructions?: string) {
