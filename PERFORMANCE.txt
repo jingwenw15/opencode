@@ -257,5 +257,54 @@ Reproduction, with Bun and ripgrep available on the existing PATH:
   bun run check
 
 These runs found no additional fork-related regression failures. They cover
-recorded/simulated model traffic and local APIs; live provider latency and
-the model's choice of validation commands remain unmeasured.
+recorded/simulated model traffic and local APIs. The live smoke checks below
+exercise the built executable separately; the workflow policy's effect on
+the model's choice of validation commands remains unmeasured.
+
+Native build and live smoke checks (2026-11-24)
+
+Built source commit eee0e6fa29ca6675671102f0827a2cf9864cc543 with Bun 1.4.4
+for macOS arm64, including the web UI and embedded PTY helper. The build's
+architecture, simulation-graph and artifact-content checks passed. The
+resulting executable also passed --version and run --help.
+
+The default build version, 0.0.0-faster-agent-loop-..., was rejected by the
+public model service with HTTP 426 (minimum OpenCode version 1.18.0). Rebuilt
+with the repository package version and an explicit fork suffix:
+2.3.0-faster-agent-loop.eee0e6f. No runtime code was changed for this issue.
+
+To reproduce a native host build after installing dependencies, from the
+checkout root:
+
+  cd packages/cli
+  OPENCODE_CHANNEL=faster-agent-loop \
+    OPENCODE_VERSION=2.3.0-faster-agent-loop.eee0e6f \
+    bun run build --single --skip-install
+
+On macOS arm64, the executable is dist/cli-darwin-arm64/bin/opencode.
+Use --standalone to run its backend rather than an installed service.
+Other host platforms have their own dist/cli-<platform>-<arch> directory.
+
+Sent real prompts to opencode/big-pickle (the built-in free public model)
+through that executable and its private server. HOME, XDG paths, project
+files and sessions were isolated in a temporary directory.
+
+Check                                     Result       Wall time
+Exact reply: OPENCODE_SMOKE_OK             Passed          3.749 s
+Read, fix a one-line bug, run six tests    Passed         11.162 s
+Restart backend, resume session, recall   Passed          3.325 s
+
+The edit task began with four failing add tests and two passing multiply
+tests. Tool events show two reads, one edit, and one shell test command.
+All six tests passed afterward. An independent rerun also passed all six;
+byte-for-byte checks confirmed only the intended source line changed,
+with the tests and package.json unchanged and no additional project files.
+The resumed session recalled the changed file, bug and passing tests without
+calling tools. All three commands exited successfully without API errors.
+
+These are single-run functional smoke checks, including startup, network
+and model time. There is no live upstream timing comparison, and these
+results do not establish a general speedup or cover every provider, the
+interactive TUI, desktop behavior, long sessions or every permission path.
+The edit prompt explicitly requested one targeted test run; it is not
+evidence that the new workflow policy alone reduced validation rounds.

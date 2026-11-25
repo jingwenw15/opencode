@@ -1,6 +1,8 @@
 > **Unofficial performance fork.** Maintained independently; not built by or affiliated with the OpenCode team. See [PERFORMANCE.txt](./PERFORMANCE.txt) for changes, measured results, and known limitations.
 >
 > To run this fork from source with Bun 1.4.4: `bun install --frozen-lockfile`, then `bun run dev --standalone /path/to/your/project`. The upstream installation commands below install the official release.
+>
+> To build a native executable, follow the versioned build instructions in [PERFORMANCE.txt](./PERFORMANCE.txt). The native build passed live chat, file-edit, shell-test, and session-resume smoke checks.
 
 <p align="center">
   <a href="https://opencode.ai">
